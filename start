@@ -1,0 +1,1 @@
+screen -dmS Meta node index.mjs
