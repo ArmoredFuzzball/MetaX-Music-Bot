@@ -1,7 +1,9 @@
 import { Client, Events, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder } from 'discord.js';
-import { joinVoiceChannel, createAudioResource, createAudioPlayer, getVoiceConnection, AudioPlayerStatus  } from '@discordjs/voice';
+import { joinVoiceChannel, createAudioResource, createAudioPlayer, getVoiceConnection, AudioPlayerStatus, EndBehaviorType  } from '@discordjs/voice';
 import { Readable } from 'node:stream';
 import { readFileSync } from 'node:fs';
+import { Worker } from 'worker_threads';
+import { opus } from 'prism-media';
 //moving this into the Server class may prevent residual audio from playing after leaving a voice channel while downloading a song
 import ytdl from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
@@ -25,6 +27,23 @@ await new REST().setToken(discord).put(Routes.applicationCommands(bot.user.id), 
 ]});
 console.log('Successfully registered application commands.');
 
+//worker setup
+const PLAYER = new Worker('./listener.mjs');
+console.log('Successfully started listener worker.');
+PLAYER.on('message', async ({guildId, transcript}) => {
+    let cmd = transcript.split(' ')[0];
+    if (cmd.includes('lay')) {
+        let song = transcript.substring(5).trim();
+        await Servers[guildId].add(song);
+        Servers[guildId].play();
+        console.log(`Added ${song} to the queue.`);
+    } else
+    if (cmd.includes('ski')) {
+        Servers[guildId].skip();
+        console.log('Skipped song.');
+    }
+});
+
 //slash command handler
 bot.on(Events.InteractionCreate, async (interaction) => {
 	if (!interaction.isChatInputCommand()) return;
@@ -42,8 +61,8 @@ async function joinCommand(int) {
     let voiceChannel = int.member.voice.channel;
     if (!voiceChannel) return int.reply({ content: 'You need to join a voice channel first!', ephemeral: true });
     if (!Servers[guildId]) Servers[guildId] = new Server(guildId);
-    Servers[guildId].join(voiceChannel);
-	int.reply({ content: `Joined ${int.member.voice.channel.name}.`, ephemeral: true });
+    Servers[guildId].join(voiceChannel, int.channel);
+	int.reply({ content: `Joined ${int.member.voice.channel.name}.`, ephemeral: false });
 }
 
 async function leaveCommand(int) {
@@ -96,6 +115,16 @@ bot.on(Events.MessageCreate, async (msg) => {
     if (msg.content.startsWith('!')) msg.reply('Use slash commands instead! The commands are the same.');
 });
 
+bot.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    if (!newState.channel) return;
+    let userId = newState.member.user.id;
+    if (userId == bot.user.id) return;
+    let guildId = newState.guild.id;
+    if (!Servers[guildId] || Servers[guildId].voiceChannel.id != newState.channel.id) return;
+    let connection = getVoiceConnection(guildId);
+    Servers[guildId].subscribeUser(userId, connection);
+});
+
 //core functions
 async function stream2array(stream) {
     const chunks = [];
@@ -110,19 +139,31 @@ const scraper = new Scraper.default();
 async function getLinkFromText(song) {
 	let results = await scraper.search(song);
 	let video = results.videos[0];
-    if (!video.link) return false;
+    if (!video || !video.link) return false;
     else             return video.link;
 }
 
+let userChunks = {};
+async function packageChunks(guildId, userId, chunk) {
+    if (!userChunks[userId]) userChunks[userId] = [];
+    userChunks[userId].push(chunk);
+    if (userChunks[userId].length >= 10) {
+        PLAYER.postMessage({ guildId, userId, chunks: userChunks[userId] });
+        userChunks[userId] = [];
+    }
+}
+
+const SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
 const Servers = {};
 class Server {
     constructor(guildId) {
-        this.guildId = guildId;
-        this.queue = [];
-        this.player = null;
-        this.nowPlaying = null;
-        this.shouldLoop = false;
+        this.guildId        = guildId;
+        this.queue          = [];
+        this.player         = null;
+        this.nowPlaying     = null;
+        this.shouldLoop     = false;
         this.messageChannel = null;
+        this.voiceChannel   = null;
     }
 
     async add(song) {
@@ -143,12 +184,36 @@ class Server {
     }
 
     async join(voiceChannel, messageChannel) {
-        joinVoiceChannel({
+        this.messageChannel = messageChannel;
+        this.voiceChannel   = voiceChannel;
+        let connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
             guildId:        voiceChannel.guild.id,
-            adapterCreator: voiceChannel.guild.voiceAdapterCreator
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf:       false
         });
-        this.messageChannel = messageChannel;
+        for (let user of voiceChannel.members.values()) {
+            this.subscribeUser(user.id, connection);
+        }
+    }
+
+    async subscribeUser(userId, connection) {
+        if (connection.receiver.subscriptions.has(userId)) return;
+        let buffer = [];
+        let stream = connection.receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } });
+        stream.on('data', async (chunk) => {
+            buffer.push(chunk)
+            if (buffer.length > 10) buffer.shift();
+        });
+        let readable = new Readable({ read() {
+            setTimeout(async () => {
+                if (buffer.length > 0) this.push(buffer.shift());
+                else this.push(SILENCE_FRAME);
+            }, 21);
+        }});
+        let decoder = new opus.Decoder({ rate: 16000, channels: 1, frameSize: 960 });
+        readable.pipe(decoder);
+        decoder.on('data', async (chunk) => packageChunks(this.guildId, userId, chunk));
     }
 
     async play() {
