@@ -37,6 +37,7 @@ bot.on(Events.InteractionCreate, (interact) => {
         switch (err) {
             case "novoice":      interact.reply({ content: "You need to be in a voice channel to use this command!", ephemeral: true });
             case "notconnected": interact.reply({ content: "I'm not connected to a voice channel!", ephemeral: true });
+            case "noresults":    interact.reply({ content: "No results found. Try a link instead!", ephemeral: true });
             default:             interact.reply({ content: `Error: ${err}`, ephemeral: false });
         }
     }
@@ -108,7 +109,11 @@ class Server {
     }
 
     async queue(song) {
-        if (!song.includes('https://')) song = (await scraper.search(song)).videos[0].link;
+        if (!song.includes('https://')) {
+            const result = await scraper.search(song);
+            if (result.videos.length == 0) throw "noresults";
+            song = result.videos[0].link;
+        }
         this.songQueue.push(song);
         this.play();
         return song;
