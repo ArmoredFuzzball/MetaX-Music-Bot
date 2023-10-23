@@ -4,6 +4,9 @@ import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
 import config  from './config.json' assert { type: 'json' };
 
+console.log("MetaX Music Bot: Copyright (C) 2023 Sloan Stubler");
+console.log("This program comes with ABSOLUTELY NO WARRANTY.");
+
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
 
 bot.login(config.discord);
