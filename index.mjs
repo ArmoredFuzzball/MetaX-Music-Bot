@@ -25,68 +25,65 @@ await new REST().setToken(config.discord).put(Routes.applicationCommands(bot.use
 console.log('Successfully registered application commands.');
 
 //slash command handler
-bot.on(Events.InteractionCreate, (interact) => {
-	if (!interact.isChatInputCommand()) return;
+bot.on(Events.InteractionCreate, async (int) => {
+	if (!int.isChatInputCommand()) return;
+    const guildId      = int.guild.id;
+    const voiceChannel = int.member.voice.channel;
+    const msgChannel   = int.channel;
     try {
-        if (interact.commandName == 'play') return playCommand(interact);
-        if (interact.commandName == 'dc'  ) return exitCommand(interact);
-        if (interact.commandName == 'skip') return skipCommand(interact);
-        if (interact.commandName == 'np'  ) return listCommand(interact);
-        if (interact.commandName == 'loop') return loopCommand(interact);
+        const response = await (async () => {
+            switch (int.commandName) {
+                case "play": return await playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
+                case "dc":   return await exitCommand(guildId);
+                case "skip": return await skipCommand(guildId, voiceChannel);
+                case "np":   return await listCommand(guildId);
+                case "loop": return await loopCommand(guildId, voiceChannel);
+            }
+        })();
+        int.reply({ content: response, ephemeral: false });
     } catch (err) {
         switch (err) {
-            case "novoice":      interact.reply({ content: "You need to be in a voice channel to use this command!", ephemeral: true });
-            case "notconnected": interact.reply({ content: "I'm not connected to a voice channel!", ephemeral: true });
-            case "noresults":    interact.reply({ content: "No results found. Try a link instead!", ephemeral: true });
-            default:             interact.reply({ content: `Error: ${err}`, ephemeral: false });
+            case "novoice":      int.reply({ content: "You need to be in a voice channel to use this command!", ephemeral: true  }); break;
+            case "notconnected": int.reply({ content: "I'm not connected to a voice channel!",                  ephemeral: true  }); break;
+            case "noresults":    int.reply({ content: "No results found. Try a link instead!",                  ephemeral: true  }); break;
+            default:             int.reply({ content: `Unexpected Error: ${err}`,                               ephemeral: false }); break;
         }
     }
 });
 
 // command functions
-async function playCommand(interact) {
-    const guildId      = interact.guild.id;
-    const voiceChannel = interact.member.voice.channel;
-    const msgChannel   = interact.channel;
+async function playCommand(guildId, voiceChannel, msgChannel, song) {
     if (!voiceChannel) throw "novoice";
     if (!Servers[guildId]) Servers[guildId] = new Server(guildId, voiceChannel, msgChannel);
-    const result = await Servers[guildId].queue(interact.options.getString('song'));
+    const result = await Servers[guildId].queue(song);
     Servers[guildId].play();
-    interact.reply({ content: `Queueing ${result}`, ephemeral: false });
+    return `Queueing ${result}`;
 }
 
-async function exitCommand(interact) {
-    const guildId      = interact.guild.id;
-    const voiceChannel = interact.member.voice.channel;
-    if (!voiceChannel)     throw "novoice";
+async function exitCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
     Servers[guildId].disconnect();
-    interact.reply({ content: "Disconnected from voice channel.", ephemeral: false });
+    return "Disconnected from voice channel.";
 }
 
-async function skipCommand(interact) {
-    const guildId      = interact.guild.id;
-    const voiceChannel = interact.member.voice.channel;
+async function skipCommand(guildId, voiceChannel) {
     if (!voiceChannel)     throw "novoice";
     if (!Servers[guildId]) throw "notconnected";
     Servers[guildId].skip();
-    interact.reply({ content: "Skipped song.", ephemeral: false });
+    return "Skipped song.";
 }
 
-async function listCommand(interact) {
-    const guildId = interact.guild.id;
+async function listCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
     const song = Servers[guildId].nowPlaying;
-    interact.reply({ content: `Now playing: ${song}`, ephemeral: false });
+    return `Now playing: ${song}`;
 }
 
-async function loopCommand(interact) {
-    const guildId = interact.guild.id;
-    const voiceChannel = interact.member.voice.channel;
+async function loopCommand(guildId, voiceChannel) {
     if (!voiceChannel)     throw "novoice";
     if (!Servers[guildId]) throw "notconnected";
     Servers[guildId].looping = !Servers[guildId].looping;
-    interact.reply({ content: `Looping set to ${Servers[guildId].looping}.`, ephemeral: false });
+    return `Looping set to ${Servers[guildId].looping}.`;
 }
 
 const scraper = new Scraper.default();
@@ -111,7 +108,7 @@ class Server {
     async queue(song) {
         if (!song.includes('https://')) {
             const result = await scraper.search(song);
-            if (result.videos.length == 0) throw "noresults";
+            if (!result || !result.videos || result.videos.length === 0) throw "noresults";
             song = result.videos[0].link;
         }
         this.songQueue.push(song);
@@ -125,9 +122,10 @@ class Server {
         this.nowPlaying = this.songQueue[0];
         const stream = ytdl(this.nowPlaying, { quality: "highestaudio", highWaterMark: 1e+7 });
         this.player.play(createAudioResource(stream));
+        await new Promise(r => setTimeout(r, 50));
         this.player.on(AudioPlayerStatus.Idle, () => this.songOver());
         this.player.on('error', (err) => {
-            this.msgChannel.send(`Error: ${err}`);
+            this.msgChannel.send(`Unexpected Error: ${err}`);
             this.songOver();
         });
     }
