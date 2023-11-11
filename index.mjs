@@ -122,9 +122,10 @@ class Server {
         this.nowPlaying = this.songQueue[0];
         const stream = ytdl(this.nowPlaying, { quality: "highestaudio", highWaterMark: 1e+7 });
         this.player.play(createAudioResource(stream));
-        await new Promise(r => setTimeout(r, 50));
-        this.player.on(AudioPlayerStatus.Idle, () => this.songOver());
-        this.player.on('error', (err) => {
+        this.player.once(AudioPlayerStatus.Playing, () => {
+            this.player.once(AudioPlayerStatus.Idle, () => this.songOver());
+        });
+        this.player.once('error', (err) => {
             this.msgChannel.send(`Unexpected Error: ${err}`);
             this.songOver();
         });
