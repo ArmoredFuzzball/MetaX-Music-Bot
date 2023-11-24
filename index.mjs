@@ -103,6 +103,13 @@ class Server {
             selfDeaf:       true
         });
         connection.subscribe(this.player);
+        this.player.on('error', (err) => {
+            this.msgChannel.send(`Unexpected Error: ${err}`);
+            this.songOver();
+        });
+        this.player.on('stateChange', (oldState, newState) => {
+            if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) this.songOver();
+        });
     }
 
     async queue(song) {
@@ -122,13 +129,6 @@ class Server {
         this.nowPlaying = this.songQueue[0];
         const stream = ytdl(this.nowPlaying, { quality: "highestaudio", highWaterMark: 1e+7 });
         this.player.play(createAudioResource(stream));
-        this.player.once(AudioPlayerStatus.Playing, () => {
-            this.player.once(AudioPlayerStatus.Idle, () => this.songOver());
-        });
-        this.player.once('error', (err) => {
-            this.msgChannel.send(`Unexpected Error: ${err}`);
-            this.songOver();
-        });
     }
 
     songOver() {
