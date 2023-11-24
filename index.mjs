@@ -15,14 +15,13 @@ bot.user.setActivity('your commands', { type: ActivityType.Watching });
 console.log(`Logged in as ${bot.user.tag}!`);
 
 //command setup
-await new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
+new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
 	new SlashCommandBuilder().setName('play').setDescription('Plays a song.').addStringOption(option => option.setName('song').setDescription('The song to play.').setRequired(true)).toJSON(),
 	new SlashCommandBuilder().setName('dc'  ).setDescription('Disconnects the bot from the voice channel.').toJSON(),
 	new SlashCommandBuilder().setName('skip').setDescription('Skips the current song.').toJSON(),
 	new SlashCommandBuilder().setName('np'  ).setDescription('Shows what is currently playing.').toJSON(),
 	new SlashCommandBuilder().setName('loop').setDescription('Loops the current song.').toJSON()
-]});
-console.log('Successfully registered application commands.');
+]}).then(() => console.log('Successfully registered application commands.')).catch(console.error);
 
 //slash command handler
 bot.on(Events.InteractionCreate, async (int) => {
@@ -110,6 +109,14 @@ class Server {
         this.player.on('stateChange', (oldState, newState) => {
             if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) this.songOver();
         });
+        setInterval(() => {
+            const botUser = voiceChannel.members.find(member => member.user.id === bot.user.id);
+            if (!botUser) return;
+            if (voiceChannel.members.size === 1) {
+                this.shutdown = true;
+                setTimeout(() => { if (this.shutdown) this.disconnect() }, 1000 * 60 * 10);
+            } else this.shutdown = false;
+        }, 1000);
     }
 
     async queue(song) {
@@ -143,7 +150,8 @@ class Server {
 
     disconnect() {
         this.player.stop();
-        getVoiceConnection(this.guildId).destroy();
+        const voice = getVoiceConnection(this.guildId);
+        if (voice) voice.destroy();
         delete Servers[this.guildId];
     }
 }
