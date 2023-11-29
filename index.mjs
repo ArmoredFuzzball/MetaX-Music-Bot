@@ -4,7 +4,7 @@ import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
 import config  from './config.json' assert { type: 'json' };
 
-console.log("MetaX Music Bot: Copyright (C) 2023 Sloan Stubler");
+console.log("MetaX Music Bot: Copyright (C) 2023 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
 
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
@@ -20,7 +20,8 @@ new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id),
 	new SlashCommandBuilder().setName('dc'  ).setDescription('Disconnects the bot from the voice channel.').toJSON(),
 	new SlashCommandBuilder().setName('skip').setDescription('Skips the current song.').toJSON(),
 	new SlashCommandBuilder().setName('np'  ).setDescription('Shows what is currently playing.').toJSON(),
-	new SlashCommandBuilder().setName('loop').setDescription('Loops the current song.').toJSON()
+	new SlashCommandBuilder().setName('loop').setDescription('Loops the current song.').toJSON(),
+    new SlashCommandBuilder().setName('queue').setDescription('Shows the current queue.').toJSON()
 ]}).then(() => console.log('Successfully registered application commands.')).catch(console.error);
 
 //slash command handler
@@ -32,20 +33,26 @@ bot.on(Events.InteractionCreate, async (int) => {
     try {
         const response = await (async () => {
             switch (int.commandName) {
-                case "play": return await playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
-                case "dc":   return await exitCommand(guildId);
-                case "skip": return await skipCommand(guildId, voiceChannel);
-                case "np":   return await listCommand(guildId);
-                case "loop": return await loopCommand(guildId, voiceChannel);
+                case "play":  return await playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
+                case "dc":    return await exitCommand(guildId);
+                case "skip":  return await skipCommand(guildId, voiceChannel);
+                case "np":    return await listCommand(guildId);
+                case "loop":  return await loopCommand(guildId, voiceChannel);
+                case "queue": return await queueCommand(guildId);
             }
         })();
         int.reply({ content: response, ephemeral: false });
     } catch (err) {
         switch (err) {
-            case "novoice":      int.reply({ content: "You need to be in a voice channel to use this command!", ephemeral: true  }); break;
-            case "notconnected": int.reply({ content: "I'm not connected to a voice channel!",                  ephemeral: true  }); break;
-            case "noresults":    int.reply({ content: "No results found. Try a link instead!",                  ephemeral: true  }); break;
-            default:             int.reply({ content: `Unexpected Error: ${err}`,                               ephemeral: false }); break;
+            case "novoice":      int.reply({ content: "You need to be in a voice channel!",    ephemeral: true }); break;
+            case "notconnected": int.reply({ content: "I'm not connected to a voice channel!", ephemeral: true }); break;
+            case "noresults":    int.reply({ content: "No results found. Try a link instead!", ephemeral: true }); break;
+            case "restricted":   int.reply({ content: "This video is restricted.",             ephemeral: true }); break;
+            default: {
+                console.error(err);
+                int.reply({ content: `Better call Sloan: ${err}`, ephemeral: false });
+                break;
+            }
         }
     }
 });
@@ -85,6 +92,18 @@ async function loopCommand(guildId, voiceChannel) {
     return `Looping set to ${Servers[guildId].looping}.`;
 }
 
+async function queueCommand(guildId) {
+    if (!Servers[guildId]) throw "notconnected";
+    const response = [];
+    const queue = Servers[guildId].songQueue;
+    for (let i = 0; i < queue.length; i++) {
+        if (queue.length === 1) return response.push('Queue is empty.');
+        if (i === 0) response.push('Now playing: ' + queue[i]);
+        else response.push(i + ': ' + queue[i]);
+    }
+    return response.join('\n');
+}
+
 const scraper = new Scraper.default();
 const Servers = {};
 class Server {
@@ -103,7 +122,10 @@ class Server {
         });
         connection.subscribe(this.player);
         this.player.on('error', (err) => {
-            this.msgChannel.send(`Unexpected Error: ${err}`);
+            console.error(err);
+            this.msgChannel.send('Player: ' + err);
+            this.msgChannel.send('This error is currently unrecoverable. Disconnect the bot to fix it.');
+            this.player.stop();
             this.songOver();
         });
         this.player.on('stateChange', (oldState, newState) => {
@@ -125,6 +147,7 @@ class Server {
             if (!result || !result.videos || result.videos.length === 0) throw "noresults";
             song = result.videos[0].link;
         }
+        await ytdl.getBasicInfo(song).catch(e => { throw "restricted" });
         this.songQueue.push(song);
         this.play();
         return song;
