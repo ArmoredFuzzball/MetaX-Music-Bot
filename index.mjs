@@ -8,6 +8,7 @@ console.log("MetaX Music Bot: Copyright (C) 2023 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
 
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
+const ytdlOptions = { filter: "audioonly", quality: "highestaudio", highWaterMark: 1e+9 };
 
 bot.login(config.discord);
 await new Promise(res => bot.once(Events.ClientReady, res));
@@ -123,13 +124,12 @@ class Server {
         connection.subscribe(this.player);
         this.player.on('error', (err) => {
             console.error(err);
-            this.msgChannel.send('Player: ' + err);
-            this.msgChannel.send('This error is currently unrecoverable. Disconnect the bot to fix it.');
-            this.player.stop();
-            this.songOver();
+            this.msgChannel.send(err + '. Check the console for more details.');
         });
         this.player.on('stateChange', (oldState, newState) => {
-            if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) this.songOver();
+            if (oldState.status !== AudioPlayerStatus.Playing) return;
+            if (newState.status !== AudioPlayerStatus.Idle)    return;
+            this.songOver();
         });
         setInterval(() => {
             const botUser = voiceChannel.members.find(member => member.user.id === bot.user.id);
@@ -138,7 +138,7 @@ class Server {
                 this.shutdown = true;
                 setTimeout(() => { if (this.shutdown) this.disconnect() }, 1000 * 60 * 10);
             } else this.shutdown = false;
-        }, 1000);
+        }, 5000);
     }
 
     async queue(song) {
@@ -157,7 +157,8 @@ class Server {
         if (this.songQueue.length == 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         this.nowPlaying = this.songQueue[0];
-        const stream = ytdl(this.nowPlaying, { quality: "highestaudio", highWaterMark: 1e+7 });
+        const stream = ytdl(this.nowPlaying, ytdlOptions);
+        // setTimeout(() => stream.emit('error', new Error('This is a test error')), 5000);
         this.player.play(createAudioResource(stream));
     }
 
@@ -178,3 +179,5 @@ class Server {
         delete Servers[this.guildId];
     }
 }
+
+process.on('unhandledRejection', e => console.error('SUBMIT AN ISSUE!\nUnhandled promise rejection:', e));
