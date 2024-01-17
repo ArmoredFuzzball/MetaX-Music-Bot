@@ -161,7 +161,7 @@ class Server {
     }
 
     play() {
-        if (this.songQueue.length == 0) return;
+        if (this.songQueue.length === 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         this.nowPlaying = this.songQueue[0];
         this.stream = ytdl(this.nowPlaying, ytdlOptions);
@@ -171,7 +171,6 @@ class Server {
     songOver() {
         this.stream.emit('end');
         clearStreamBuffer(this.stream);
-        this.stream = null;
         if (!this.looping) this.songQueue.shift();
         setTimeout(() => this.play(), 1200);
     }
@@ -183,9 +182,10 @@ class Server {
 
     disconnect() {
         this.player.stop();
+        this.stream.emit('end');
+        clearStreamBuffer(this.stream);
         clearInterval(this.timer);
-        const voice = getVoiceConnection(this.guildId);
-        if (voice) voice.destroy();
+        getVoiceConnection(this.guildId).destroy();
         delete Servers[this.guildId];
     }
 }
