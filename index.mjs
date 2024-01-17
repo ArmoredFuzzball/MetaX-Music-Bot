@@ -55,7 +55,7 @@ bot.on(Events.InteractionCreate, async (int) => {
             case "novoice":      int.reply({ content: "You need to be in a voice channel!",    ephemeral: true }); break;
             case "notconnected": int.reply({ content: "I'm not connected to a voice channel!", ephemeral: true }); break;
             case "noresults":    int.reply({ content: "No results found. Try a link instead!", ephemeral: true }); break;
-            case "restricted":   int.reply({ content: "This video is restricted.",             ephemeral: true }); break;
+            case "restricted":   int.reply({ content: "This video is restricted or it's an album",  ephemeral: true }); break;
             default: {
                 console.error(err);
                 int.reply({ content: `Better call Sloan: ${err}`, ephemeral: false });
@@ -70,7 +70,6 @@ async function playCommand(guildId, voiceChannel, msgChannel, song) {
     if (!voiceChannel) throw "novoice";
     if (!Servers[guildId]) Servers[guildId] = new Server(guildId, voiceChannel, msgChannel);
     const result = await Servers[guildId].queue(song);
-    Servers[guildId].play();
     return `Queueing ${result}`;
 }
 
@@ -121,6 +120,7 @@ class Server {
         this.songQueue  = [];
         this.looping    = false;
         this.nowPlaying = null;
+        this.stream     = null;
         this.player     = createAudioPlayer();
         const connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -160,17 +160,20 @@ class Server {
         return song;
     }
 
-    async play() {
+    play() {
         if (this.songQueue.length == 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         this.nowPlaying = this.songQueue[0];
-        const stream = ytdl(this.nowPlaying, ytdlOptions);
-        this.player.play(createAudioResource(stream));
+        this.stream = ytdl(this.nowPlaying, ytdlOptions);
+        this.player.play(createAudioResource(this.stream));
     }
 
     songOver() {
+        this.stream.emit('end');
+        clearStreamBuffer(this.stream);
+        this.stream = null;
         if (!this.looping) this.songQueue.shift();
-        this.play();
+        setTimeout(() => this.play(), 1200);
     }
     
     skip() {
@@ -188,3 +191,10 @@ class Server {
 }
 
 process.on('unhandledRejection', e => console.error('SUBMIT AN ISSUE!\nUnhandled promise rejection:', e));
+
+function clearStreamBuffer(readable) {
+    while (true) {
+        const chunk = readable.read();
+        if (chunk === null) return;
+    }
+}

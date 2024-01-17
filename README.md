@@ -1,5 +1,6 @@
 # MetaX Music Bot
-A lightweight Discord bot written in Node.js that can play videos and livestreams from YouTube and YouTube Music. It can also work across multiple servers in parallel.
+A lightweight Discord bot written in Node.js that can play videos from YouTube and YouTube Music. It can also work across multiple servers in parallel.
+NOTE: Livestream support is basically nonexistent. Sometimes they play, sometimes they brick your queue.
 
 ## Commands
 | Command | Description |
@@ -9,6 +10,7 @@ A lightweight Discord bot written in Node.js that can play videos and livestream
 | **/skip** | Skip the current song. |
 | **/np** | See what song is currently playing. |
 | **/loop** | Loop the currently playing song. |
+| **/queue** | Show currently queued songs.
 
 ## How to use
 Create a `config.json` file in the project directory. This file should contain a single key-value pair, like so:
