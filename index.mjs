@@ -15,6 +15,13 @@ await new Promise(res => bot.once(Events.ClientReady, res));
 bot.user.setActivity('your commands', { type: ActivityType.Watching });
 console.log(`Logged in as ${bot.user.tag}!`);
 
+// const startUsage = process.memoryUsage().rss / 1024 / 1024;
+// setInterval(() => {
+//     const currentUsage = process.memoryUsage().rss / 1024/ 1024;
+//     const diff = currentUsage - startUsage;
+//     console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
+// }, 2000);
+
 //command setup
 new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
 	new SlashCommandBuilder().setName('play').setDescription('Plays a song.').addStringOption(option => option.setName('song').setDescription('The song to play.').setRequired(true)).toJSON(),
@@ -131,7 +138,7 @@ class Server {
             if (newState.status !== AudioPlayerStatus.Idle)    return;
             this.songOver();
         });
-        setInterval(() => {
+        this.timer = setInterval(() => {
             const botUser = voiceChannel.members.find(member => member.user.id === bot.user.id);
             if (!botUser) return;
             if (voiceChannel.members.size === 1) {
@@ -158,7 +165,6 @@ class Server {
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         this.nowPlaying = this.songQueue[0];
         const stream = ytdl(this.nowPlaying, ytdlOptions);
-        // setTimeout(() => stream.emit('error', new Error('This is a test error')), 5000);
         this.player.play(createAudioResource(stream));
     }
 
@@ -174,6 +180,7 @@ class Server {
 
     disconnect() {
         this.player.stop();
+        clearInterval(this.timer);
         const voice = getVoiceConnection(this.guildId);
         if (voice) voice.destroy();
         delete Servers[this.guildId];
