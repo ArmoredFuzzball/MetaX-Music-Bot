@@ -20,4 +20,4 @@ Create a `config.json` file in the project directory. This file should contain a
 }
 ```
 Where `your-bot-token` is the token for your bot application, provided in the Discord Developer Portal.
-To start the bot, simply run `npm ./index.mjs` in the project directory.
+To start the bot, simply run `node ./index.mjs` in the project directory.

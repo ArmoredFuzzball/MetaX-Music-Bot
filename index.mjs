@@ -156,7 +156,7 @@ class Server {
         }
         await ytdl.getBasicInfo(song).catch(e => { throw "restricted" });
         this.songQueue.push(song);
-        this.play();
+        setTimeout(() => this.play(), 500);
         return song;
     }
 
@@ -185,12 +185,11 @@ class Server {
         this.stream.emit('end');
         clearStreamBuffer(this.stream);
         clearInterval(this.timer);
-        getVoiceConnection(this.guildId).destroy();
+        const voice = getVoiceConnection(this.guildId);
+        if (voice) voice.destroy();
         delete Servers[this.guildId];
     }
 }
-
-process.on('unhandledRejection', e => console.error('SUBMIT AN ISSUE!\nUnhandled promise rejection:', e));
 
 function clearStreamBuffer(readable) {
     while (true) {
