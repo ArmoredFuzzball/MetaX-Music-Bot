@@ -15,14 +15,16 @@ await new Promise(res => bot.once(Events.ClientReady, res));
 bot.user.setActivity('your commands', { type: ActivityType.Watching });
 console.log(`Logged in as ${bot.user.tag}!`);
 
-// const startUsage = process.memoryUsage().rss / 1024 / 1024;
-// setInterval(() => {
-//     const currentUsage = process.memoryUsage().rss / 1024/ 1024;
-//     const diff = currentUsage - startUsage;
-//     console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
-// }, 2000);
+//memory usage logger
+const startUsage = process.memoryUsage().rss / 1024 / 1024;
+function printUsage() {
+    const currentUsage = process.memoryUsage().rss / 1024/ 1024;
+    const diff = currentUsage - startUsage;
+    console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
+}
+// setInterval(printUsage, 500);
 
-//command setup
+//slash command setup
 new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
 	new SlashCommandBuilder().setName('play').setDescription('Plays a song.').addStringOption(option => option.setName('song').setDescription('The song to play.').setRequired(true)).toJSON(),
 	new SlashCommandBuilder().setName('dc'  ).setDescription('Disconnects the bot from the voice channel.').toJSON(),
@@ -35,35 +37,49 @@ new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id),
 //slash command handler
 bot.on(Events.InteractionCreate, async (int) => {
 	if (!int.isChatInputCommand()) return;
+    await int.deferReply();
+    const response = executeCommand(int).catch(notifyError);
+    int.editReply(await response);
+});
+
+//leave after inactivity
+bot.on('voiceStateUpdate', (oldState, newState) => {
+    if (oldState.member.user.bot) return;
+    const voiceChannel = oldState.channel;
+    if (!voiceChannel) return;
+    if (voiceChannel.members.size > 1) return;
+    const server = Servers[oldState.guild.id];
+    const timeout = () => { if (server && voiceChannel.members.size === 1) server.disconnect() };
+    setTimeout(timeout, 1000 * 60 * 10);
+});
+
+//command parsers
+async function executeCommand(int) {
     const guildId      = int.guild.id;
     const voiceChannel = int.member.voice.channel;
     const msgChannel   = int.channel;
-    try {
-        const response = await (async () => {
-            switch (int.commandName) {
-                case "play":  return await playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
-                case "dc":    return await exitCommand(guildId);
-                case "skip":  return await skipCommand(guildId, voiceChannel);
-                case "np":    return await listCommand(guildId);
-                case "loop":  return await loopCommand(guildId, voiceChannel);
-                case "queue": return await queueCommand(guildId);
-            }
-        })();
-        int.reply({ content: response, ephemeral: false });
-    } catch (err) {
-        switch (err) {
-            case "novoice":      int.reply({ content: "You need to be in a voice channel!",    ephemeral: true }); break;
-            case "notconnected": int.reply({ content: "I'm not connected to a voice channel!", ephemeral: true }); break;
-            case "noresults":    int.reply({ content: "No results found. Try a link instead!", ephemeral: true }); break;
-            case "restricted":   int.reply({ content: "This video is restricted or it's an album",  ephemeral: true }); break;
-            default: {
-                console.error(err);
-                int.reply({ content: `Better call Sloan: ${err}`, ephemeral: false });
-                break;
-            }
-        }
-    }
-});
+    switch (int.commandName) {
+        case "play":  return playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
+        case "dc":    return exitCommand(guildId);
+        case "skip":  return skipCommand(guildId, voiceChannel);
+        case "np":    return listCommand(guildId);
+        case "loop":  return loopCommand(guildId, voiceChannel);
+        case "queue": return queueCommand(guildId);
+    };
+}
+
+async function notifyError(err) {
+    switch (err) {
+        case "novoice":      return "You need to be in a voice channel!";
+        case "notconnected": return "I'm not connected to a voice channel!";
+        case "noresults":    return "No results found. Try a link instead!";
+        case "notyoutube":   return "This is not a YouTube link!";
+        case "notplayable":  return "Albums are not yet playable!";
+        case "restricted":   return "This video is age restricted!";
+        case "noqueue":      return "There is nothing to skip!";
+        default:             return `Unknown ${err}`;
+    };
+}
 
 // command functions
 async function playCommand(guildId, voiceChannel, msgChannel, song) {
@@ -82,6 +98,7 @@ async function exitCommand(guildId) {
 async function skipCommand(guildId, voiceChannel) {
     if (!voiceChannel)     throw "novoice";
     if (!Servers[guildId]) throw "notconnected";
+    if (Servers[guildId].songQueue.length === 0) throw "noqueue";
     Servers[guildId].skip();
     return "Skipped song.";
 }
@@ -101,10 +118,11 @@ async function loopCommand(guildId, voiceChannel) {
 
 async function queueCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
-    const response = [];
     const queue = Servers[guildId].songQueue;
+    if (queue.length === 0) return 'Queue is empty.';
+    if (queue.length === 1) return 'Now playing: ' + queue[0];
+    const response = [];
     for (let i = 0; i < queue.length; i++) {
-        if (queue.length === 1) return response.push('Queue is empty.');
         if (i === 0) response.push('Now playing: ' + queue[i]);
         else response.push(i + ': ' + queue[i]);
     }
@@ -119,6 +137,7 @@ class Server {
         this.msgChannel = msgChannel;
         this.songQueue  = [];
         this.looping    = false;
+        this.shutdown   = false;
         this.nowPlaying = null;
         this.stream     = null;
         this.player     = createAudioPlayer();
@@ -133,19 +152,7 @@ class Server {
             console.error(err);
             this.msgChannel.send(err + '. Check the console for more details.');
         });
-        this.player.on('stateChange', (oldState, newState) => {
-            if (oldState.status !== AudioPlayerStatus.Playing) return;
-            if (newState.status !== AudioPlayerStatus.Idle)    return;
-            this.songOver();
-        });
-        this.timer = setInterval(() => {
-            const botUser = voiceChannel.members.find(member => member.user.id === bot.user.id);
-            if (!botUser) return;
-            if (voiceChannel.members.size === 1) {
-                this.shutdown = true;
-                setTimeout(() => { if (this.shutdown) this.disconnect() }, 1000 * 60 * 10);
-            } else this.shutdown = false;
-        }, 5000);
+        this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
     }
 
     async queue(song) {
@@ -154,7 +161,7 @@ class Server {
             if (!result || !result.videos || result.videos.length === 0) throw "noresults";
             song = result.videos[0].link;
         }
-        await ytdl.getBasicInfo(song).catch(e => { throw "restricted" });
+        await ytdl.getBasicInfo(song).catch(parseVideoError);
         this.songQueue.push(song);
         setTimeout(() => this.play(), 500);
         return song;
@@ -167,13 +174,6 @@ class Server {
         this.stream = ytdl(this.nowPlaying, ytdlOptions);
         this.player.play(createAudioResource(this.stream));
     }
-
-    songOver() {
-        this.stream.emit('end');
-        clearStreamBuffer(this.stream);
-        if (!this.looping) this.songQueue.shift();
-        setTimeout(() => this.play(), 1200);
-    }
     
     skip() {
         if (this.looping) this.songQueue.shift();
@@ -181,19 +181,43 @@ class Server {
     }
 
     disconnect() {
-        this.player.stop();
-        this.stream.emit('end');
+        this.shutdown = true;
+        if (this.player.state.status === AudioPlayerStatus.Idle) {
+            getVoiceConnection(this.guildId).destroy();
+            delete Servers[this.guildId];
+        } else this.player.stop();
+    }
+
+    _transition(oldStatus, newStatus) {
+        if (oldStatus !== AudioPlayerStatus.Playing) return;
+        if (newStatus !== AudioPlayerStatus.Idle)    return;
         clearStreamBuffer(this.stream);
-        clearInterval(this.timer);
-        const voice = getVoiceConnection(this.guildId);
-        if (voice) voice.destroy();
-        delete Servers[this.guildId];
+        if (this.shutdown) {
+            getVoiceConnection(this.guildId).destroy();
+            delete Servers[this.guildId];
+        } else {
+            if (!this.looping) this.songQueue.shift();
+            setTimeout(() => this.play(), 1000);
+        }
     }
 }
 
-function clearStreamBuffer(readable) {
+//free up memory because ytdl won't do it for us
+async function clearStreamBuffer(readable) {
+    readable.destroy();
+    await new Promise(res => setTimeout(res, 200));
     while (true) {
         const chunk = readable.read();
         if (chunk === null) return;
+    }
+}
+
+//ytdl error conversion
+function parseVideoError(err) {
+    switch (err.toString().substring(7)) {
+        case 'Not a YouTube domain':        throw 'notyoutube';
+        case 'No video id found':           throw 'notplayable';
+        case 'Sign in to confirm your age': throw 'restricted';
+        default: throw err;
     }
 }
