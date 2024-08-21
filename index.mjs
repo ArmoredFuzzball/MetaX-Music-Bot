@@ -4,7 +4,7 @@ import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
 import config  from './config.json' assert { type: 'json' };
 
-console.log("MetaX Music Bot: Copyright (C) 2023 ArmoredFuzzball");
+console.log("MetaX Music Bot: Copyright (C) 2024 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
 
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
@@ -18,11 +18,11 @@ console.log(`Logged in as ${bot.user.tag}!`);
 //memory usage logger
 const startUsage = process.memoryUsage().rss / 1024 / 1024;
 function printUsage() {
-    const currentUsage = process.memoryUsage().rss / 1024/ 1024;
+    const currentUsage = process.memoryUsage().rss / 1024 / 1024;
     const diff = currentUsage - startUsage;
     console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
 }
-// setInterval(printUsage, 500);
+// setInterval(printUsage, 2000);
 
 //slash command setup
 new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
@@ -38,8 +38,9 @@ new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id),
 bot.on(Events.InteractionCreate, async (int) => {
 	if (!int.isChatInputCommand()) return;
     await int.deferReply();
-    const response = executeCommand(int).catch(notifyError);
-    int.editReply(await response);
+    const response = await (executeCommand(int).catch(notifyError));
+    console.log(`Guild: ${int.guild.name} | User: ${int.user.tag} | Response: ${response}`);
+    int.editReply(response);
 });
 
 //leave after inactivity
@@ -55,11 +56,13 @@ bot.on('voiceStateUpdate', (oldState, newState) => {
 
 //command parsers
 async function executeCommand(int) {
+    const guildName    = int.guild.name;
     const guildId      = int.guild.id;
     const voiceChannel = int.member.voice.channel;
     const msgChannel   = int.channel;
+    console.log(`Guild: ${int.guild.name} | User: ${int.user.tag} | Command: ${int.commandName}`);
     switch (int.commandName) {
-        case "play":  return playCommand(guildId, voiceChannel, msgChannel, int.options.getString('song'));
+        case "play":  return playCommand(guildId, guildName, voiceChannel, msgChannel, int.options.getString('song'));
         case "dc":    return exitCommand(guildId);
         case "skip":  return skipCommand(guildId, voiceChannel);
         case "np":    return listCommand(guildId);
@@ -74,7 +77,7 @@ async function notifyError(err) {
         case "notconnected": return "I'm not connected to a voice channel!";
         case "noresults":    return "No results found. Try a link instead!";
         case "notyoutube":   return "This is not a YouTube link!";
-        case "notplayable":  return "Albums are not yet playable!";
+        case "notplayable":  return "Video isn't playable. Is it an album link?";
         case "restricted":   return "This video is age restricted!";
         case "noqueue":      return "There is nothing to skip!";
         default:             return `Unknown ${err}`;
@@ -82,9 +85,9 @@ async function notifyError(err) {
 }
 
 // command functions
-async function playCommand(guildId, voiceChannel, msgChannel, song) {
+async function playCommand(guildId, guildName, voiceChannel, msgChannel, song) {
     if (!voiceChannel) throw "novoice";
-    if (!Servers[guildId]) Servers[guildId] = new Server(guildId, voiceChannel, msgChannel);
+    if (!Servers[guildId]) Servers[guildId] = new Server(guildId, guildName, voiceChannel, msgChannel);
     const result = await Servers[guildId].queue(song);
     return `Queueing ${result}`;
 }
@@ -130,14 +133,15 @@ async function queueCommand(guildId) {
 }
 
 const scraper = new Scraper.default();
+/** @type {Object<string, Server>} */
 const Servers = {};
 class Server {
-    constructor(guildId, voiceChannel, msgChannel) {
+    constructor(guildId, guildName, voiceChannel, msgChannel) {
+        this.guildName  = guildName;
         this.guildId    = guildId;
         this.msgChannel = msgChannel;
         this.songQueue  = [];
         this.looping    = false;
-        this.shutdown   = false;
         this.nowPlaying = null;
         this.stream     = null;
         this.player     = createAudioPlayer();
@@ -149,7 +153,7 @@ class Server {
         });
         connection.subscribe(this.player);
         this.player.on('error', (err) => {
-            console.error(err);
+            console.error(`Guild: ${this.guildName} | Error: ${err}`);
             this.msgChannel.send(err + '. Check the console for more details.');
         });
         this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
@@ -181,24 +185,19 @@ class Server {
     }
 
     disconnect() {
-        this.shutdown = true;
-        if (this.player.state.status === AudioPlayerStatus.Idle) {
-            getVoiceConnection(this.guildId).destroy();
-            delete Servers[this.guildId];
-        } else this.player.stop();
+        this.player.stop(true);
+        getVoiceConnection(this.guildId).destroy();
+        delete Servers[this.guildId];
     }
 
     _transition(oldStatus, newStatus) {
+        if (!Servers[this.guildId]) return;
+        console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (oldStatus !== AudioPlayerStatus.Playing) return;
         if (newStatus !== AudioPlayerStatus.Idle)    return;
         clearStreamBuffer(this.stream);
-        if (this.shutdown) {
-            getVoiceConnection(this.guildId).destroy();
-            delete Servers[this.guildId];
-        } else {
-            if (!this.looping) this.songQueue.shift();
-            setTimeout(() => this.play(), 1000);
-        }
+        if (!this.looping) this.songQueue.shift();
+        setTimeout(() => this.play(), 1000);
     }
 }
 
@@ -214,7 +213,7 @@ async function clearStreamBuffer(readable) {
 
 //ytdl error conversion
 function parseVideoError(err) {
-    switch (err.toString().substring(7)) {
+    switch (err.toString().substring(7).split(':')[0]) {
         case 'Not a YouTube domain':        throw 'notyoutube';
         case 'No video id found':           throw 'notplayable';
         case 'Sign in to confirm your age': throw 'restricted';
