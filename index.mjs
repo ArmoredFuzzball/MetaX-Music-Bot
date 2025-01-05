@@ -1,10 +1,14 @@
+import config from './config.json' with { type: 'json' };
+import net    from 'net';
+
+net.setDefaultAutoSelectFamilyAttemptTimeout(500);
+
 import { Client, Events, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { joinVoiceChannel, createAudioResource, createAudioPlayer, AudioPlayerStatus, getVoiceConnection } from '@discordjs/voice';
 import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
-import config  from './config.json' assert { type: 'json' };
 
-console.log("MetaX Music Bot: Copyright (C) 2024 ArmoredFuzzball");
+console.log("MetaX Music Bot: Copyright (C) 2025 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
 
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
@@ -22,7 +26,7 @@ function printUsage() {
     const diff = currentUsage - startUsage;
     console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
 }
-// setInterval(printUsage, 2000);
+// setInterval(printUsage, 500);
 
 //slash command setup
 new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
@@ -45,7 +49,7 @@ bot.on(Events.InteractionCreate, async (int) => {
 
 //leave after inactivity
 bot.on('voiceStateUpdate', (oldState, newState) => {
-    if (oldState.member.user.bot) return;
+    if (oldState.member && oldState.member.user.bot) return;
     const voiceChannel = oldState.channel;
     if (!voiceChannel) return;
     if (voiceChannel.members.size > 1) return;
@@ -154,7 +158,7 @@ class Server {
         connection.subscribe(this.player);
         this.player.on('error', (err) => {
             console.error(`Guild: ${this.guildName} | Error: ${err}`);
-            this.msgChannel.send(err + '. Check the console for more details.');
+            console.error(err.stack);
         });
         this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
     }
@@ -167,7 +171,7 @@ class Server {
         }
         await ytdl.getBasicInfo(song).catch(parseVideoError);
         this.songQueue.push(song);
-        setTimeout(() => this.play(), 500);
+        this.play();
         return song;
     }
 
@@ -193,18 +197,17 @@ class Server {
     _transition(oldStatus, newStatus) {
         if (!Servers[this.guildId]) return;
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
-        if (oldStatus !== AudioPlayerStatus.Playing) return;
-        if (newStatus !== AudioPlayerStatus.Idle)    return;
+        if (oldStatus === AudioPlayerStatus.Buffering && newStatus === AudioPlayerStatus.Idle) return this.play();
+        if (newStatus !== AudioPlayerStatus.Idle) return;
         clearStreamBuffer(this.stream);
         if (!this.looping) this.songQueue.shift();
-        setTimeout(() => this.play(), 1000);
+        setTimeout(() => this.play(), 800);
     }
 }
 
 //free up memory because ytdl won't do it for us
-async function clearStreamBuffer(readable) {
-    readable.destroy();
-    await new Promise(res => setTimeout(res, 200));
+/** @param {import('stream').Readable} readable */
+function clearStreamBuffer(readable) {
     while (true) {
         const chunk = readable.read();
         if (chunk === null) return;
