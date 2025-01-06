@@ -1,18 +1,18 @@
-import config from './config.json' with { type: 'json' };
-import net    from 'net';
-
+import net from 'net';
 net.setDefaultAutoSelectFamilyAttemptTimeout(500);
 
 import { Client, Events, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { joinVoiceChannel, createAudioResource, createAudioPlayer, AudioPlayerStatus, getVoiceConnection } from '@discordjs/voice';
 import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
+import config  from './config.json' with { type: 'json' };
+import https   from 'https';
+import { Readable } from 'stream';
 
 console.log("MetaX Music Bot: Copyright (C) 2025 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
 
 const bot = new Client({ intents: [ GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates ]});
-const ytdlOptions = { filter: "audioonly", quality: "highestaudio", highWaterMark: 1e+9 };
 
 bot.login(config.discord);
 await new Promise(res => bot.once(Events.ClientReady, res));
@@ -77,14 +77,17 @@ async function executeCommand(int) {
 
 async function notifyError(err) {
     switch (err) {
-        case "novoice":      return "You need to be in a voice channel!";
-        case "notconnected": return "I'm not connected to a voice channel!";
-        case "noresults":    return "No results found. Try a link instead!";
-        case "notyoutube":   return "This is not a YouTube link!";
-        case "notplayable":  return "Video isn't playable. Is it an album link?";
-        case "restricted":   return "This video is age restricted!";
-        case "noqueue":      return "There is nothing to skip!";
-        default:             return `Unknown ${err}`;
+        case "novoice":       return "You need to be in a voice channel!";
+        case "notconnected":  return "I'm not connected to a voice channel!";
+        case "noresults":     return "No results found. Try a link instead!";
+        case "notyoutube":    return "This is not a YouTube link!";
+        case "notplayable":   return "Video isn't playable. Is it an album link?";
+        case "restricted":    return "This video is age restricted!";
+        case "noqueue":       return "There is nothing to skip!";
+        case "noformats":     return "No audio formats found for this video!";
+        case "downloaderror": return "Error downloading video!";
+        case "maxattempts":   return "Failed to download video after multiple attempts!";
+        default:              return `Unknown ${err}`;
     };
 }
 
@@ -113,7 +116,7 @@ async function skipCommand(guildId, voiceChannel) {
 async function listCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
     const song = Servers[guildId].nowPlaying;
-    return `Now playing: ${song}`;
+    return `Now playing: ${song.rawurl}`;
 }
 
 async function loopCommand(guildId, voiceChannel) {
@@ -125,29 +128,27 @@ async function loopCommand(guildId, voiceChannel) {
 
 async function queueCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
-    const queue = Servers[guildId].songQueue;
-    if (queue.length === 0) return 'Queue is empty.';
-    if (queue.length === 1) return 'Now playing: ' + queue[0];
-    const response = [];
-    for (let i = 0; i < queue.length; i++) {
-        if (i === 0) response.push('Now playing: ' + queue[i]);
-        else response.push(i + ': ' + queue[i]);
-    }
-    return response.join('\n');
+    const queue = Servers[guildId].songQueue.map((song, index) => `${index == 0 ? "Now" : index}: ${song.rawurl}`);
+    return `Queue:\n${queue.join('\n')}`;
 }
 
 const scraper = new Scraper.default();
 /** @type {Object<string, Server>} */
 const Servers = {};
 class Server {
+    /**
+     * @param {string} guildId
+     * @param {string} guildName
+     * @param {import('discord.js').VoiceChannel} voiceChannel
+     * @param {import('discord.js').TextChannel} msgChannel
+     */
     constructor(guildId, guildName, voiceChannel, msgChannel) {
         this.guildName  = guildName;
         this.guildId    = guildId;
         this.msgChannel = msgChannel;
         this.songQueue  = [];
         this.looping    = false;
-        this.nowPlaying = null;
-        this.stream     = null;
+        this.nowPlaying = { "rawurl": null, "url": null };
         this.player     = createAudioPlayer();
         const connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -169,20 +170,24 @@ class Server {
             if (!result || !result.videos || result.videos.length === 0) throw "noresults";
             song = result.videos[0].link;
         }
-        await ytdl.getBasicInfo(song).catch(parseVideoError);
-        this.songQueue.push(song);
-        this.play();
+        const url = await decipherURL(song);
+        this.songQueue.push({ "rawurl": song, "url": url });
+        setTimeout(() => this.play(), 500);
         return song;
     }
 
-    play() {
+    async play() {
         if (this.songQueue.length === 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         this.nowPlaying = this.songQueue[0];
-        this.stream = ytdl(this.nowPlaying, ytdlOptions);
-        this.player.play(createAudioResource(this.stream));
+        try {
+            const stream = await fetchVideoStream(this.nowPlaying.url);
+            this.player.play(createAudioResource(stream));
+        } catch (error) {
+            this.msgChannel.send(await notifyError(error));
+        }
     }
-    
+
     skip() {
         if (this.looping) this.songQueue.shift();
         this.player.stop();
@@ -197,21 +202,52 @@ class Server {
     _transition(oldStatus, newStatus) {
         if (!Servers[this.guildId]) return;
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
-        if (oldStatus === AudioPlayerStatus.Buffering && newStatus === AudioPlayerStatus.Idle) return this.play();
         if (newStatus !== AudioPlayerStatus.Idle) return;
-        clearStreamBuffer(this.stream);
-        if (!this.looping) this.songQueue.shift();
-        setTimeout(() => this.play(), 800);
+        if (!this.looping && oldStatus !== AudioPlayerStatus.Buffering) this.songQueue.shift();
+        setTimeout(() => this.play(), 1500);
     }
 }
 
-//free up memory because ytdl won't do it for us
-/** @param {import('stream').Readable} readable */
-function clearStreamBuffer(readable) {
-    while (true) {
-        const chunk = readable.read();
-        if (chunk === null) return;
+/**
+ * @param {string} rawurl
+ * @returns {Promise<string>}
+ */
+async function decipherURL(rawurl) {
+    if (!rawurl.includes('youtube')) throw "notyoutube";
+    const info = await ytdl.getInfo(rawurl).catch(parseVideoError);
+    const formats = info.player_response.streamingData.formats;
+    if (!formats) throw "noformats";
+    if (!formats[0].url) throw "notplayable";
+    return formats[0].url;
+}
+
+/**
+ * @param {string} url
+ * @returns {Promise<Readable>}
+ */
+async function fetchVideoStream(url) {
+    let recoverAttempts = 0;
+
+    async function attemptDownload() {
+        return new Promise((resolve, reject) => {
+            https.get(url, (response) => {
+                if (response.statusCode === 200) resolve(response);
+                else reject(response);
+            });
+        });
     }
+
+    while (recoverAttempts <= 2) {
+        try {
+            return await attemptDownload();
+        } catch (error) {
+            console.error(error);
+            if (error.statusCode === 320) recoverAttempts++;
+            else throw "downloaderror";
+        }
+    }
+
+    throw "maxattempts";
 }
 
 //ytdl error conversion
