@@ -6,8 +6,7 @@ import { joinVoiceChannel, createAudioResource, createAudioPlayer, AudioPlayerSt
 import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
 import config  from './config.json' with { type: 'json' };
-import https   from 'https';
-import { Readable } from 'stream';
+import { isReadable, Readable } from 'stream';
 
 console.log("MetaX Music Bot: Copyright (C) 2025 ArmoredFuzzball");
 console.log("This program comes with ABSOLUTELY NO WARRANTY.");
@@ -115,7 +114,7 @@ async function skipCommand(guildId, voiceChannel) {
 
 async function listCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
-    const song = Servers[guildId].nowPlaying;
+    const song = Servers[guildId].songQueue[0];
     return `Now playing: ${song.rawurl}`;
 }
 
@@ -128,8 +127,8 @@ async function loopCommand(guildId, voiceChannel) {
 
 async function queueCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
-    const queue = Servers[guildId].songQueue.map((song, index) => `${index == 0 ? "Now" : index}: ${song.rawurl}`);
-    return `Queue:\n${queue.join('\n')}`;
+    const queue = Servers[guildId].songQueue.map((song, index) => `${index === 0 ? ">" : index}. ${song.rawurl}`);
+    return queue.join('\n');
 }
 
 const scraper = new Scraper.default();
@@ -148,7 +147,6 @@ class Server {
         this.msgChannel = msgChannel;
         this.songQueue  = [];
         this.looping    = false;
-        this.nowPlaying = { "rawurl": null, "url": null };
         this.player     = createAudioPlayer();
         const connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -164,28 +162,27 @@ class Server {
         this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
     }
 
-    async queue(song) {
-        if (!song.includes('https://')) {
-            const result = await scraper.search(song);
+    async queue(rawurl) {
+        if (!rawurl.includes('https://')) {
+            const result = await scraper.search(rawurl);
             if (!result || !result.videos || result.videos.length === 0) throw "noresults";
-            song = result.videos[0].link;
+            rawurl = result.videos[0].link;
         }
-        const url = await decipherURL(song);
-        this.songQueue.push({ "rawurl": song, "url": url });
-        setTimeout(() => this.play(), 500);
-        return song;
+        const url = await decipherURL(rawurl);
+        this.songQueue.push({ rawurl, url });
+        this.play();
+        return rawurl;
     }
 
     async play() {
         if (this.songQueue.length === 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
-        this.nowPlaying = this.songQueue[0];
-        try {
-            const stream = await fetchVideoStream(this.nowPlaying.url);
-            this.player.play(createAudioResource(stream));
-        } catch (error) {
-            this.msgChannel.send(await notifyError(error));
-        }
+        const res = await fetch(this.songQueue[0].url);
+        if (res.ok && isReadable) {
+            const stream   = Readable.fromWeb(res.body, { highWaterMark: 1e7 });
+            const resource = createAudioResource(stream);
+            this.player.play(resource);
+        } else this.msgChannel.send("Error downloading video:", res.statusText);
     }
 
     skip() {
@@ -204,7 +201,7 @@ class Server {
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (newStatus !== AudioPlayerStatus.Idle) return;
         if (!this.looping && oldStatus !== AudioPlayerStatus.Buffering) this.songQueue.shift();
-        setTimeout(() => this.play(), 1500);
+        this.play();
     }
 }
 
@@ -213,41 +210,13 @@ class Server {
  * @returns {Promise<string>}
  */
 async function decipherURL(rawurl) {
-    if (!rawurl.includes('youtube')) throw "notyoutube";
-    const info = await ytdl.getInfo(rawurl).catch(parseVideoError);
-    const formats = info.player_response.streamingData.formats;
-    if (!formats) throw "noformats";
-    if (!formats[0].url) throw "notplayable";
-    return formats[0].url;
-}
-
-/**
- * @param {string} url
- * @returns {Promise<Readable>}
- */
-async function fetchVideoStream(url) {
-    let recoverAttempts = 0;
-
-    async function attemptDownload() {
-        return new Promise((resolve, reject) => {
-            https.get(url, (response) => {
-                if (response.statusCode === 200) resolve(response);
-                else reject(response);
-            });
-        });
-    }
-
-    while (recoverAttempts <= 2) {
-        try {
-            return await attemptDownload();
-        } catch (error) {
-            console.error(error);
-            if (error.statusCode === 320) recoverAttempts++;
-            else throw "downloaderror";
-        }
-    }
-
-    throw "maxattempts";
+    if (rawurl.includes('youtube')) {
+        const info = await ytdl.getInfo(rawurl).catch(parseVideoError);
+        const formats = info.player_response.streamingData.formats;
+        if (!formats) throw "noformats";
+        if (!formats[0].url) throw "notplayable";
+        return formats[0].url;
+    } else return rawurl;
 }
 
 //ytdl error conversion
