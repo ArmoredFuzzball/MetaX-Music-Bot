@@ -25,7 +25,7 @@ function printUsage() {
     const diff = currentUsage - startUsage;
     console.log(`Total: ${Math.round(currentUsage)}MB | Change: ${Math.round(diff)}MB`);
 }
-// setInterval(printUsage, 500);
+// setInterval(printUsage, 2000);
 
 //slash command setup
 new REST().setToken(config.discord).put(Routes.applicationCommands(bot.user.id), { body: [
@@ -147,6 +147,7 @@ class Server {
         this.msgChannel = msgChannel;
         this.songQueue  = [];
         this.looping    = false;
+        this.stream     = null;
         this.player     = createAudioPlayer();
         const connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -175,14 +176,18 @@ class Server {
     }
 
     async play() {
-        if (this.songQueue.length === 0) return;
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
-        const res = await fetch(this.songQueue[0].url);
-        if (res.ok && isReadable) {
-            const stream   = Readable.fromWeb(res.body, { highWaterMark: 1e7 });
-            const resource = createAudioResource(stream);
-            this.player.play(resource);
-        } else this.msgChannel.send("Error downloading video:", res.statusText);
+        try {
+            const res = await fetch(this.songQueue[0].url);
+            if (res.ok && isReadable) {
+                this.stream = Readable.fromWeb(res.body, { highWaterMark: 1e7 });
+                const resource = createAudioResource(this.stream);
+                this.player.play(resource);
+            } else throw new Error(res.statusText);
+        } catch (error) {
+            console.error(error);
+            this.msgChannel.send("Error downloading video:", error.message || error);
+        }
     }
 
     skip() {
@@ -200,12 +205,16 @@ class Server {
         if (!Servers[this.guildId]) return;
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (newStatus !== AudioPlayerStatus.Idle) return;
+        clearStreamBuffer(this.stream);
+        if (this.songQueue.length === 0) return;
         if (!this.looping && oldStatus !== AudioPlayerStatus.Buffering) this.songQueue.shift();
-        this.play();
+        setTimeout(() => this.play(), 500);
     }
 }
 
 /**
+ * Takes a raw URL and returns a playable URL.
+ * If the raw URL is a YouTube link, it will be deciphered.
  * @param {string} rawurl
  * @returns {Promise<string>}
  */
@@ -226,5 +235,17 @@ function parseVideoError(err) {
         case 'No video id found':           throw 'notplayable';
         case 'Sign in to confirm your age': throw 'restricted';
         default: throw err;
+    }
+}
+
+/**
+ * Clears the buffer of a readable stream.
+ * This prevents memory leaks.
+ * @param {Readable} readable
+ */
+function clearStreamBuffer(readable) {
+    while (true) {
+        const chunk = readable.read();
+        if (chunk === null) return;
     }
 }
