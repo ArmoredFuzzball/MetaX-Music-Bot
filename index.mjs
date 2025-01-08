@@ -156,9 +156,9 @@ class Server {
             selfDeaf:       true
         });
         connection.subscribe(this.player);
-        this.player.on('error', (err) => {
-            console.error(`Guild: ${this.guildName} | Error: ${err}`);
-            console.error(err.stack);
+        this.player.on('error', (error) => {
+            console.error(error);
+            this.msgChannel.send("Error in video player:", error.message || error);
         });
         this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
     }
@@ -179,14 +179,14 @@ class Server {
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
         try {
             const res = await fetch(this.songQueue[0].url);
-            if (res.ok && isReadable) {
+            if (res.ok && isReadable(res.body)) {
                 this.stream = Readable.fromWeb(res.body, { highWaterMark: 1e7 });
                 const resource = createAudioResource(this.stream);
                 this.player.play(resource);
             } else throw new Error(res.statusText);
         } catch (error) {
             console.error(error);
-            this.msgChannel.send("Error downloading video:", error.message || error);
+            this.msgChannel.send("Error fetching video:", error.message || error);
         }
     }
 
@@ -206,8 +206,8 @@ class Server {
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (newStatus !== AudioPlayerStatus.Idle) return;
         clearStreamBuffer(this.stream);
-        if (this.songQueue.length === 0) return;
         if (!this.looping && oldStatus !== AudioPlayerStatus.Buffering) this.songQueue.shift();
+        if (this.songQueue.length === 0) return;
         setTimeout(() => this.play(), 500);
     }
 }
