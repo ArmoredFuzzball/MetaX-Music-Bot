@@ -201,12 +201,17 @@ class Server {
         delete Servers[this.guildId];
     }
 
-    _transition(oldStatus, newStatus) {
+    async _transition(oldStatus, newStatus) {
         if (!Servers[this.guildId]) return;
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (newStatus !== AudioPlayerStatus.Idle) return;
         clearStreamBuffer(this.stream);
-        if (!this.looping && oldStatus !== AudioPlayerStatus.Buffering) this.songQueue.shift();
+        if (oldStatus !== AudioPlayerStatus.Buffering) {
+            if (this.looping && this.songQueue.length > 0) {
+                // this prevents a failure when looping for extended periods
+                this.songQueue[0].url = await decipherURL(this.songQueue[0].rawurl).catch(() => this.songQueue[0].url);  
+            } else this.songQueue.shift();
+        }
         if (this.songQueue.length === 0) return;
         setTimeout(() => this.play(), 500);
     }
