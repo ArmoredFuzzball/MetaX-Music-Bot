@@ -51,7 +51,7 @@ bot.on('voiceStateUpdate', (oldState, _) => {
     if (!voiceChannel) return;
     if (voiceChannel.members.size > 1) return;
     const server = Servers[oldState.guild.id];
-    setTimeout(() => { if (server && voiceChannel.members.size === 1) server.disconnect() }, 1000 * 60 * 5);
+    setTimeout(() => { if (server && voiceChannel.members.size === 1) disconnect(server.guildId) }, 1000 * 60 * 5);
 });
 
 async function executeCommand(int) {
