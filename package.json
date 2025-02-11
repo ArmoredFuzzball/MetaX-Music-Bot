@@ -2,9 +2,9 @@
   "dependencies": {
     "@discordjs/opus": "^0.9.0",
     "@discordjs/voice": "^0.16.1",
-    "@distube/ytdl-core": "^4.15.8",
+    "@distube/ytdl-core": "^4.16.3",
     "@yimura/scraper": "^1.2.4",
-    "discord.js": "^14.17.2",
+    "discord.js": "^14.18.0",
     "ffmpeg-static": "^5.2.0",
     "sodium-native": "^4.3.1"
   }

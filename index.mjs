@@ -1,8 +1,8 @@
 import net from 'net';
-net.setDefaultAutoSelectFamilyAttemptTimeout(500);
+net.setDefaultAutoSelectFamily(false);
 
 import { Client, Events, GatewayIntentBits, ActivityType, REST, Routes, SlashCommandBuilder } from 'discord.js';
-import { joinVoiceChannel, createAudioResource, createAudioPlayer, AudioPlayerStatus, getVoiceConnection } from '@discordjs/voice';
+import { joinVoiceChannel, createAudioResource, createAudioPlayer, AudioPlayerStatus, getVoiceConnection, AudioPlayerError, StreamType } from '@discordjs/voice';
 import ytdl    from '@distube/ytdl-core';
 import Scraper from '@yimura/scraper';
 import config  from './config.json' with { type: 'json' };
@@ -86,7 +86,10 @@ async function notifyError(err) {
         case "noformats":     return "No audio formats found for this video!";
         case "downloaderror": return "Error downloading video!";
         case "maxattempts":   return "Failed to download video after multiple attempts!";
-        default:              return `Unknown ${err}`;
+        default:              {
+            console.error(err);
+            return `Unknown ${err}`;
+        }
     };
 }
 
@@ -115,6 +118,7 @@ async function skipCommand(guildId, voiceChannel) {
 async function listCommand(guildId) {
     if (!Servers[guildId]) throw "notconnected";
     const song = Servers[guildId].songQueue[0];
+    if (!song) return "No song is currently playing.";
     return `Now playing: ${song.rawurl}`;
 }
 
@@ -148,6 +152,7 @@ class Server {
         this.songQueue  = [];
         this.looping    = false;
         this.stream     = null;
+        this.playlock   = false;
         this.player     = createAudioPlayer();
         const connection = joinVoiceChannel({
             channelId:      voiceChannel.id,
@@ -156,20 +161,18 @@ class Server {
             selfDeaf:       true
         });
         connection.subscribe(this.player);
-        this.player.on('error', (error) => {
-            console.error(error);
-            this.msgChannel.send("Error in video player:", error.message || error);
-        });
+        this.player.on('error', (error) => parseStreamError(error, this.msgChannel));
         this.player.on('stateChange', (oldState, newState) => this._transition(oldState.status, newState.status));
     }
 
     async queue(rawurl) {
-        if (!rawurl.includes('https://')) {
+        let url;
+        if (!rawurl.includes('https://') && !rawurl.includes('http://')) {
             const result = await scraper.search(rawurl);
             if (!result || !result.videos || result.videos.length === 0) throw "noresults";
             rawurl = result.videos[0].link;
-        }
-        const url = await decipherURL(rawurl);
+            url    = result.videos[0].link;
+        } else url = await decipherURL(rawurl);
         this.songQueue.push({ rawurl, url });
         this.play();
         return rawurl;
@@ -177,16 +180,23 @@ class Server {
 
     async play() {
         if (this.player.state.status !== AudioPlayerStatus.Idle) return;
+        if (this.playlock) return;
         try {
-            const res = await fetch(this.songQueue[0].url);
+            this.playlock = true;
+            const res = await fetch(this.songQueue[0].url, { priority: 'high', headers: { 'User-Agent': 'Mozilla/5.0' }, keepalive: true });
             if (res.ok && isReadable(res.body)) {
                 this.stream = Readable.fromWeb(res.body, { highWaterMark: 1e7 });
-                const resource = createAudioResource(this.stream);
+                this.stream.once('error', (error) => {
+                    console.error("Web stream error:", error);
+                });
+                // this.stream = res.body;
+                const inputType = getInputType(res.headers.get('content-type'));
+                const resource = createAudioResource(this.stream, { inputType });
                 this.player.play(resource);
-            } else throw new Error(res.statusText);
+            } else throw res.statusText;
         } catch (error) {
-            console.error(error);
-            this.msgChannel.send("Error fetching video:", error.message || error);
+            this.playlock = false;
+            parseStreamError(error, this.msgChannel)
         }
     }
 
@@ -197,7 +207,8 @@ class Server {
 
     disconnect() {
         this.player.stop(true);
-        getVoiceConnection(this.guildId).destroy();
+        const connection = getVoiceConnection(this.guildId);
+        if (connection) connection.destroy();
         delete Servers[this.guildId];
     }
 
@@ -206,41 +217,41 @@ class Server {
         console.log(`Guild: ${this.guildName} | Status: ${oldStatus} -> ${newStatus}`);
         if (newStatus !== AudioPlayerStatus.Idle) return;
         clearStreamBuffer(this.stream);
+        this.playlock = false;
         if (oldStatus !== AudioPlayerStatus.Buffering) {
             if (this.looping && this.songQueue.length > 0) {
                 // this prevents a failure when looping for extended periods
-                this.songQueue[0].url = await decipherURL(this.songQueue[0].rawurl).catch(() => this.songQueue[0].url);  
+                this.songQueue[0].url = await decipherURL(this.songQueue[0].rawurl).catch(() => this.songQueue[0].url);
             } else this.songQueue.shift();
         }
         if (this.songQueue.length === 0) return;
-        setTimeout(() => this.play(), 500);
+        setTimeout(() => this.play(), 1000);
     }
 }
 
 /**
+ * Find the appropriate stream type for the given content type.
+ * This is used to optimize audio resource transcoding.
+ * @param {String} contentType
+ * @returns {StreamType}
+ */
+function getInputType(contentType) {
+    // console.log(contentType);
+    if (contentType == "audio/webm") return StreamType.WebmOpus;
+    return StreamType.Arbitrary;
+}
+
+/**
  * Takes a raw URL and returns a playable URL.
- * If the raw URL is a YouTube link, it will be deciphered.
  * @param {string} rawurl
  * @returns {Promise<string>}
  */
 async function decipherURL(rawurl) {
-    if (rawurl.includes('youtube')) {
-        const info = await ytdl.getInfo(rawurl).catch(parseVideoError);
-        const formats = info.player_response.streamingData.formats;
-        if (!formats) throw "noformats";
-        if (!formats[0].url) throw "notplayable";
-        return formats[0].url;
+    if (rawurl.includes('youtube') || rawurl.includes('youtu.be')) {
+        const format = await getFirstReachableFormat(rawurl);
+        if (!format) throw "noformats";
+        return format.url;
     } else return rawurl;
-}
-
-//ytdl error conversion
-function parseVideoError(err) {
-    switch (err.toString().substring(7).split(':')[0]) {
-        case 'Not a YouTube domain':        throw 'notyoutube';
-        case 'No video id found':           throw 'notplayable';
-        case 'Sign in to confirm your age': throw 'restricted';
-        default: throw err;
-    }
 }
 
 /**
@@ -249,8 +260,68 @@ function parseVideoError(err) {
  * @param {Readable} readable
  */
 function clearStreamBuffer(readable) {
+    readable.destroy();
     while (true) {
         const chunk = readable.read();
         if (chunk === null) return;
+    }
+}
+
+/**
+ * @param {Error} error
+ * @param {import('discord.js').TextChannel} msgChannel
+ */
+function parseStreamError(error, msgChannel) {
+    if (error && error.cause && error.cause instanceof AggregateError) {
+        console.error("AggregateError details:");
+        for (const individualError of error.cause.errors) {
+            console.error(individualError.name, individualError.stack);
+        }
+        msgChannel.send("Aggregate errors during playback.");
+    } else if (error instanceof AudioPlayerError) {
+        console.error("AudioPlayerError details:", error.stack);
+        msgChannel.send("Audio player error during playback.");
+    } else {
+        console.error(error.name + "details:", error);
+        msgChannel.send("Error during playback.");
+    }
+}
+
+/**
+ * Gets the first reachable video format from a YouTube URL, retrying up to the specified number of times.
+ * @param {string} youtubeURL
+ * @param {number} maxattempts
+ * @returns {Promise<ytdl.videoFormat>}
+ */
+async function getFirstReachableFormat(youtubeURL, maxattempts = 3) {
+    let attempt = 1;
+    while (attempt < maxattempts) {
+        const { formats } = await ytdl.getInfo(youtubeURL);
+        // console.log("Found", formats.length, "video formats");
+
+        const playableformats = formats.filter(format => !format.url.includes("https://manifest.googlevideo.com"));
+        // console.log("Found", playableformats.length, "playable video formats");
+
+        const useableFormats = playableformats.filter(format => format.hasAudio);
+        // console.log("Found", useableFormats.length, "useable video formats");
+
+        const orderedFormats = useableFormats.sort((a, b) => {
+            if (a.audioCodec === "opus") return -1;
+            if (b.audioCodec === "opus") return 1;
+            return 0;
+        });
+
+        for (const format of orderedFormats) {
+            try {
+                const result = await fetch(format.url);
+                if (result.ok) {
+                    // console.log("Found a reachable video format");
+                    return format;
+                }
+            } catch (error) {}
+        }
+
+        attempt++;
+        console.log("Failed to find a reachable video format, retrying...");
     }
 }
