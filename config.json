@@ -1,0 +1,11 @@
+{
+  "token": "your-discord-app-token",
+  "nodes": [
+    {
+      "name": "localhost",
+      "auth": "youshallnotpass",
+      "url": "localhost:2334",
+      "tls": false
+    }
+  ]
+}
